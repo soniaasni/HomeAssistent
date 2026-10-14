@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from importlib.machinery import SourceFileLoader
@@ -166,6 +167,25 @@ class CaseStyleTest(ChangeNameTestCase):
         path = self.write("alt.txt", "café lstm LSTM".encode("latin-1"))
         self.run_tool("lstm", "abcd", "--yes")
         self.assertEqual(path.read_bytes(), "café abcd ABCD".encode("latin-1"))
+
+    def test_digits_and_separators_keep_their_form(self):
+        self.write("lstm2_v3/a.txt", "lstm2_v3 LSTM2_V3 Lstm2_v3")
+        self.run_tool("lstm2_v3", "abcd4-x5", "--yes")
+        self.assertEqual((self.tmp / "abcd4-x5/a.txt").read_text(), "abcd4-x5 ABCD4-X5 Abcd4-x5")
+
+    def test_name_starting_with_digit(self):
+        self.write("a.txt", "2lstm 2LSTM")
+        self.run_tool("2lstm", "3abcd", "--yes")
+        self.assertEqual((self.tmp / "a.txt").read_text(), "3abcd 3ABCD")
+
+    def test_no_case_style_changes_a_digit_or_ascii_symbol(self):
+        # Annahme aus Abschnitt 3.1, geprüft für alle Unicode-Dezimalziffern (Nd).
+        digits = [chr(cp) for cp in range(sys.maxunicode + 1)
+                  if unicodedata.category(chr(cp)) == "Nd"]
+        symbols = [chr(cp) for cp in range(128) if not chr(cp).isalpha()]
+        for style in cn.CASE_STYLES:
+            for c in digits + symbols:
+                self.assertEqual(style(c), c, (style.__name__, hex(ord(c))))
 
     def test_replacer_mapping_and_precedence(self):
         r = cn.Replacer("lstm", "abcd")

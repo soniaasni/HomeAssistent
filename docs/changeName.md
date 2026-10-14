@@ -61,13 +61,36 @@ Schreibweisen, geordnet nach absteigendem Vorrang (`CASE_STYLES` im Code):
 | *f*₀ | wie eingegeben | *s* | `lstm` → `abcd` | `HomeAssistent` → `SmartHome` |
 | *f*₁ | klein | lower(*s*) | (= *f*₀) | `homeassistent` → `smarthome` |
 | *f*₂ | GROSS | upper(*s*) | `LSTM` → `ABCD` | `HOMEASSISTENT` → `SMARTHOME` |
-| *f*₃ | erster Buchstabe groß | upper(*s*₁) · *s*₂…*s*ₙ | `Lstm` → `Abcd` | (= *f*₀) |
-| *f*₄ | erster Buchstabe klein | lower(*s*₁) · *s*₂…*s*ₙ | (= *f*₀) | `homeAssistent` → `smartHome` |
-| *f*₅ | erster groß, Rest klein | upper(*s*₁) · lower(*s*₂…*s*ₙ) | (= *f*₃) | `Homeassistent` → `Smarthome` |
+| *f*₃ | erstes Zeichen groß | upper(*s*₁) · *s*₂…*s*ₙ | `Lstm` → `Abcd` | (= *f*₀) |
+| *f*₄ | erstes Zeichen klein | lower(*s*₁) · *s*₂…*s*ₙ | (= *f*₀) | `homeAssistent` → `smartHome` |
+| *f*₅ | erstes groß, Rest klein | upper(*s*₁) · lower(*s*₂…*s*ₙ) | (= *f*₃) | `Homeassistent` → `Smarthome` |
 
 lower und upper sind die vollständigen Unicode-Abbildungen von Python
-(`str.lower`, `str.upper`); sie können die Länge ändern
+(`str.lower`, `str.upper`) [8]; sie können die Länge ändern
 (upper(`straße`) = `STRASSE`).
+
+**Ziffern und Sonderzeichen bleiben unverändert.** Groß- und Kleinschreibung
+ist in Unicode eine Eigenschaft von Buchstaben, nicht von Tasten: Dass auf
+einer deutschen Tastatur Umschalt+`2` das Zeichen `"` ergibt, ist eine
+Tastaturbelegung, keine Großschreibung; es gilt upper(`2`) = `2`. Eine
+vollständige Prüfung aller Codepunkte (Python 3.13.16, Unicode 15.1)
+ergibt:
+
+- Alle 680 Dezimalziffern (Kategorie Nd: `0`–`9` und die Ziffern anderer
+  Schriften) bleiben unter lower und upper unverändert.
+- Kein ASCII-Zeichen außer den Buchstaben `A`–`Z`/`a`–`z` wird verändert
+  (also auch nicht `_`, `-`, `.`, `"`).
+- Außerhalb der Buchstaben (Kategorie L) besitzen nur 85 Zeichen eine
+  Groß-/Kleinabbildung: 32 römische Zahlzeichen (Nl, `Ⅰ` ↔ `ⅰ`),
+  52 eingekreiste Buchstaben (So, `Ⓐ` ↔ `ⓐ`) und ein kombinierendes Zeichen
+  (U+0345).
+
+In einer Form wie `lstm2_v3` → `LSTM2_V3` ändern sich daher nur die
+Buchstaben (Test `test_no_case_style_changes_a_digit_or_ascii_symbol`
+prüft die ersten beiden Aussagen für alle sechs Schreibweisen). Beginnt *A*
+mit einer Ziffer (`2lstm`), lassen *f*₃ und *f*₄ das erste Zeichen
+unverändert und fallen mit anderen Formen zusammen; ersetzt werden dann
+`2lstm` und `2LSTM`, eine Form `2Lstm` wird als nicht unterstützt gemeldet.
 
 **Formenmenge und Zuordnung.** Die Menge der gesuchten Formen ist
 𝒜 = { *f*ᵢ(*A*) | *i* = 0…5 }. Jede Form *a* ∈ 𝒜 wird ersetzt durch
@@ -420,6 +443,9 @@ einem eigenen Prozess auf.
 | `test_non_ascii_case_variants` | Formen mit Umlauten | R7 |
 | `test_sharp_s_uppercase_changes_length` | upper(`straße`) = `STRASSE` wird erkannt | R7 |
 | `test_ascii_variants_in_latin1_file` | Formen in Latin-1-Datei (Fall 1 aus 4.3) | R4, R7 |
+| `test_digits_and_separators_keep_their_form` | Ziffern, `_` und `-` bleiben in allen Formen erhalten | R7 |
+| `test_name_starting_with_digit` | *A* beginnt mit Ziffer | R7 |
+| `test_no_case_style_changes_a_digit_or_ascii_symbol` | keine Schreibweise verändert eine der 680 Unicode-Dezimalziffern oder ein ASCII-Sonderzeichen | R7 |
 | `test_replacer_mapping_and_precedence` | Formenmenge, Zuordnung τ, Terminierung von σ | R7 |
 | `test_vcs_cache_and_dependency_dirs_are_untouched` | Ausnahmen inkl. `.git` als Datei; `.gitignore` wird bearbeitet | R3 |
 | `test_additional_exclude_option` | Option `-e` | R3 |
@@ -446,7 +472,7 @@ einem eigenen Prozess auf.
 python3 -m unittest discover -s tests -v
 ```
 
-**Ergebnis (2026-10-14):** 32 Tests, alle bestanden; Python 3.13.16,
+**Ergebnis (2026-10-14):** 35 Tests, alle bestanden; Python 3.13.16,
 Linux 6.18.
 
 ## 9 Bedienung
@@ -532,3 +558,6 @@ POSIX-System für den Aufruf über die Shebang-Zeile.
    (Alternation `|`: „REs separated by '|' are tried from left to right“;
    Flag `re.IGNORECASE` und seine Unicode-Sonderfälle).
    <https://docs.python.org/3/library/re.html>
+8. The Unicode Consortium: *The Unicode Standard, Version 15.1*, Kap. 3.13
+   „Default Case Algorithms“; Zeichenkategorien laut `UnicodeData.txt`.
+   <https://www.unicode.org/versions/Unicode15.1.0/>
