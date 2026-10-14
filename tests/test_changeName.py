@@ -88,9 +88,9 @@ class ReplacementTest(ChangeNameTestCase):
         self.run_tool("Foo", "FooBar", "--yes")
         self.assertEqual((self.tmp / "FooBar.txt").read_text(), "FooBar FooBar")
 
-    def test_replacement_is_case_sensitive(self):
+    def test_case_sensitive_option_replaces_only_typed_form(self):
         self.write("a.txt", "Foo foo FOO")
-        self.run_tool("Foo", "Bar", "--yes")
+        self.run_tool("Foo", "Bar", "--yes", "--case-sensitive")
         self.assertEqual((self.tmp / "a.txt").read_text(), "Bar foo FOO")
 
     def test_preserves_line_endings_and_file_mode(self):
@@ -104,6 +104,75 @@ class ReplacementTest(ChangeNameTestCase):
         self.write("a/Foo.txt", "Foo")
         self.run_tool("Foo", "Bar", "--yes")
         self.assertFalse([p for p in self.snapshot() if cn.TEMP_PREFIX in p])
+
+
+class CaseStyleTest(ChangeNameTestCase):
+    """Schreibweisen-Abbildung (Abschnitt 3.2)."""
+
+    def test_lower_capitalized_and_upper_are_mapped_in_same_style(self):
+        self.write("lstm/Lstm.py", "lstm = Lstm(LSTM)\n")
+        self.write("LSTM.md", "# LSTM\n")
+
+        code, out, _ = self.run_tool("lstm", "abcd", "--yes")
+
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.tmp / "abcd/Abcd.py").read_text(), "abcd = Abcd(ABCD)\n")
+        self.assertEqual((self.tmp / "ABCD.md").read_text(), "# ABCD\n")
+
+    def test_typed_form_has_precedence(self):
+        # Neuer Name in camelCase: die eingegebene Form wird wörtlich übernommen.
+        self.write("a.txt", "lstm Lstm LSTM")
+        self.run_tool("lstm", "convLstm", "--yes")
+        self.assertEqual((self.tmp / "a.txt").read_text(), "convLstm ConvLstm CONVLSTM")
+
+    def test_camel_case_name_variants(self):
+        self.write("a.txt", "HomeAssistent homeAssistent homeassistent HOMEASSISTENT Homeassistent")
+        self.run_tool("HomeAssistent", "SmartHome", "--yes")
+        self.assertEqual((self.tmp / "a.txt").read_text(),
+                         "SmartHome smartHome smarthome SMARTHOME Smarthome")
+
+    def test_unsupported_style_is_reported_not_replaced(self):
+        self.write("a.txt", "lstm lStM")
+        self.write("LsTm.py", "")
+        code, out, _ = self.run_tool("lstm", "abcd", "--yes")
+        self.assertEqual(code, 0)
+        self.assertEqual((self.tmp / "a.txt").read_text(), "abcd lStM")
+        self.assertTrue((self.tmp / "LsTm.py").exists())
+        self.assertIn("'lStM'", out)
+        self.assertIn("'LsTm'", out)
+
+    def test_changing_only_the_case(self):
+        # Identische Paare (LSTM -> LSTM) dürfen weder zählen noch Konflikte melden.
+        self.write("lstm.txt", "lstm LSTM")
+        self.write("LSTM.md", "x")
+        code, out, _ = self.run_tool("lstm", "LSTM", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.tmp / "LSTM.txt").read_text(), "LSTM LSTM")
+        self.assertIn("(1x)", out)
+
+    def test_non_ascii_case_variants(self):
+        self.write("Müller/müller.txt", "müller Müller MÜLLER")
+        self.run_tool("müller", "meier", "--yes")
+        self.assertEqual((self.tmp / "Meier/meier.txt").read_text(encoding="utf-8"),
+                         "meier Meier MEIER")
+
+    def test_sharp_s_uppercase_changes_length(self):
+        # upper("straße") = "STRASSE": wird als eigene Form erkannt.
+        self.write("a.txt", "straße Straße STRASSE")
+        self.run_tool("straße", "weg", "--yes")
+        self.assertEqual((self.tmp / "a.txt").read_text(encoding="utf-8"), "weg Weg WEG")
+
+    def test_ascii_variants_in_latin1_file(self):
+        path = self.write("alt.txt", "café lstm LSTM".encode("latin-1"))
+        self.run_tool("lstm", "abcd", "--yes")
+        self.assertEqual(path.read_bytes(), "café abcd ABCD".encode("latin-1"))
+
+    def test_replacer_mapping_and_precedence(self):
+        r = cn.Replacer("lstm", "abcd")
+        self.assertEqual(r.pairs, {"lstm": "abcd", "LSTM": "ABCD", "Lstm": "Abcd"})
+        self.assertEqual(cn.Replacer("lstm", "abcd", ignore_case=False).pairs, {"lstm": "abcd"})
+        # Treffer werden nicht erneut durchsucht: σ terminiert auch bei NEU ⊃ ALT.
+        self.assertEqual(cn.Replacer("a", "aA").sub("a A"), "aA AA")
 
 
 class ExclusionTest(ChangeNameTestCase):

@@ -12,21 +12,34 @@
 ## `changeName` – Namen überall ersetzen
 
 Ersetzt einen Namen rekursiv ab dem angegebenen Ordner in **Ordnernamen,
-Dateinamen, Dateiinhalten und Symlink-Zielen**. Ausgenommen sind `.git` und
-andere Versionsverwaltungs-, Cache- und Abhängigkeitsordner (`.hg`, `.svn`,
-`__pycache__`, `.venv`, `node_modules`, …).
+Dateinamen, Dateiinhalten und Symlink-Zielen**. Groß-/Kleinschreibung wird
+beim Suchen ignoriert, ersetzt wird **im selben Stil**:
+
+| gefunden | `./changeName . lstm abcd` ersetzt durch |
+|----------|-------------------------------------------|
+| `lstm`   | `abcd` |
+| `Lstm`   | `Abcd` |
+| `LSTM`   | `ABCD` |
+
+Bei zusammengesetzten Namen den alten Namen in CamelCase eingeben
+(`HomeAssistent SmartHome`); dann werden auch `homeAssistent` →
+`smartHome`, `homeassistent` → `smarthome` usw. erkannt. Ausgenommen sind
+`.git` und andere Versionsverwaltungs-, Cache- und Abhängigkeitsordner
+(`.hg`, `.svn`, `__pycache__`, `.venv`, `node_modules`, …).
 
 ```bash
 ./changeName .                         # fragt alten und neuen Namen ab
 ./changeName . AlterName NeuerName -n  # Probelauf: nur anzeigen
 ./changeName . AlterName NeuerName     # ausführen (mit Rückfrage)
 ./changeName . AlterName NeuerName -y  # ausführen ohne Rückfrage
+./changeName . AlterName NeuerName -c  # nur exakt diese Schreibweise
 ./changeName . AlterName NeuerName -e build   # zusätzlich "build" ausnehmen
 ```
 
 Eigenschaften:
 
 - zeigt vor jeder Änderung den vollständigen Plan und fragt nach,
+- meldet Vorkommen in ungewöhnlicher Schreibweise (z. B. `lStM`), statt zu raten,
 - überschreibt nie bestehende Dateien oder Ordner (Konflikte werden gemeldet),
 - verändert keine Binärdateien und schreibt Dateien atomar,
 - benennt Ordner von innen nach außen um, damit alle Pfade gültig bleiben,

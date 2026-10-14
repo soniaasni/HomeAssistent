@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """changeName – ersetzt einen Namen rekursiv in Ordnernamen, Dateinamen,
-Dateiinhalten und Symlink-Zielen.
+Dateiinhalten und Symlink-Zielen, in allen gängigen Schreibweisen.
 
 Aufruf:
     ./changeName .                  # fragt ALT und NEU interaktiv ab
     ./changeName . ALT NEU          # Namen direkt übergeben
     ./changeName . ALT NEU -n       # Probelauf: nur anzeigen, nichts ändern
+    ./changeName . ALT NEU -c       # nur exakt die eingegebene Schreibweise
+
+Beispiel: `./changeName . lstm abcd` ersetzt lstm -> abcd, LSTM -> ABCD und
+Lstm -> Abcd.
 
 Das Verfahren (Phasen, Korrektheitsargumente, Grenzen) ist in
 docs/changeName.md dokumentiert; die Abschnittsnummern in den Kommentaren
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -34,6 +39,100 @@ DEFAULT_EXCLUDES = frozenset({
 })
 
 TEMP_PREFIX = ".changeName-"
+
+
+# --------------------------------------------------------------------------
+# Ersetzungsfunktion σ (Abschnitt 3)
+# --------------------------------------------------------------------------
+
+def as_typed(s: str) -> str:
+    return s
+
+
+def upper_first(s: str) -> str:
+    return s[:1].upper() + s[1:]
+
+
+def lower_first(s: str) -> str:
+    return s[:1].lower() + s[1:]
+
+
+def capitalized(s: str) -> str:
+    return s[:1].upper() + s[1:].lower()
+
+
+# Unterstützte Schreibweisen in absteigendem Vorrang (Abschnitt 3.2). Jede
+# Funktion leitet aus der eingegebenen Form eine Schreibweise ab; dieselbe
+# Funktion, angewandt auf NEU, liefert den Ersatz im selben Stil.
+CASE_STYLES = (as_typed, str.lower, str.upper, upper_first, lower_first, capitalized)
+
+
+class Replacer:
+    """σ: ersetzt alle Schreibweisen von ALT in einem Durchlauf (Abschnitt 3).
+
+    `pairs` bildet jede erkannte Schreibweise von ALT auf NEU im selben Stil
+    ab. Fallen zwei Schreibweisen zusammen (bei `lstm` sind „wie eingegeben“
+    und „klein“ dieselbe Form), gilt die vorrangige.
+    """
+
+    def __init__(self, old: str, new: str, ignore_case: bool = True):
+        self.pairs: dict[str, str] = {}
+        for style in CASE_STYLES if ignore_case else CASE_STYLES[:1]:
+            self.pairs.setdefault(style(old), style(new))
+        self.ascii = all(a.isascii() and n.isascii() for a, n in self.pairs.items())
+
+        # Längste Form zuerst: Pythons Alternation nimmt die erste passende
+        # Alternative, so gewinnt bei gleichem Startpunkt der längste Treffer.
+        forms = sorted(self.pairs, key=len, reverse=True)
+        self._text_re = re.compile("|".join(map(re.escape, forms)))
+        self._bytes_pairs = {a.encode("utf-8"): n.encode("utf-8") for a, n in self.pairs.items()}
+        self._bytes_re = re.compile(b"|".join(re.escape(a.encode("utf-8")) for a in forms))
+
+        # Nur zum Melden von Vorkommen in nicht unterstützter Schreibweise
+        # (z. B. `lStM`); ersetzt wird ausschließlich über `pairs`.
+        self._loose_text = re.compile(re.escape(old), re.IGNORECASE) if ignore_case else None
+        self._loose_bytes = (re.compile(re.escape(old.encode("ascii")), re.IGNORECASE)
+                             if ignore_case and old.isascii() else None)
+
+    def changes(self) -> dict[str, str]:
+        """Die Paare, die tatsächlich etwas ändern."""
+        return {a: n for a, n in self.pairs.items() if a != n}
+
+    def sub(self, text: str) -> str:
+        return self._text_re.sub(lambda m: self.pairs[m.group()], text)
+
+    def sub_bytes(self, data: bytes) -> bytes:
+        return self._bytes_re.sub(lambda m: self._bytes_pairs[m.group()], data)
+
+    def count(self, text: str) -> int:
+        """Anzahl der Treffer, die sich durch die Ersetzung ändern."""
+        return sum(1 for m in self._text_re.finditer(text) if self.pairs[m.group()] != m.group())
+
+    def count_bytes(self, data: bytes) -> int:
+        return sum(1 for m in self._bytes_re.finditer(data)
+                   if self._bytes_pairs[m.group()] != m.group())
+
+    def unsupported(self, text: str) -> list[str]:
+        """Vorkommen von ALT in einer Schreibweise, die σ nicht ersetzt."""
+        if self._loose_text is None:
+            return []
+        return [m.group() for m in self._loose_text.finditer(text) if m.group() not in self.pairs]
+
+    def unsupported_bytes(self, data: bytes) -> list[str]:
+        if self._loose_text is None:
+            return []
+        if self._loose_bytes is not None:
+            found = (m.group().decode("ascii") for m in self._loose_bytes.finditer(data))
+            return [s for s in found if s not in self.pairs]
+        try:
+            return self.unsupported(data.decode("utf-8"))
+        except UnicodeDecodeError:
+            return []
+
+
+def describe_unsupported(found: list[str]) -> str:
+    examples = ", ".join(f"'{s}'" for s in sorted(set(found))[:3])
+    return f"{len(found)} Vorkommen in nicht unterstützter Schreibweise ({examples}) nicht ersetzt"
 
 
 @dataclass
@@ -87,12 +186,13 @@ def is_utf8(data: bytes) -> bool:
     return True
 
 
-def plan_content(path: str, old_b: bytes, ascii_names: bool, plan: Plan) -> None:
+def plan_content(path: str, replacer: Replacer, plan: Plan) -> None:
     """Prüft, ob und wie der Inhalt einer regulären Datei ersetzt werden darf.
 
-    Ersetzt wird auf Byte-Ebene (Abschnitt 4.3). Das ist bei ASCII-Namen in
-    jeder ASCII-kompatiblen Kodierung korrekt; bei Nicht-ASCII-Namen nur, wenn
-    die Datei gültiges UTF-8 ist (Selbstsynchronisation von UTF-8).
+    Ersetzt wird auf Byte-Ebene (Abschnitt 4.3). Das ist bei reinen
+    ASCII-Formen in jeder ASCII-kompatiblen Kodierung korrekt; enthält eine
+    Form Nicht-ASCII-Zeichen, nur wenn die Datei gültiges UTF-8 ist
+    (Selbstsynchronisation von UTF-8).
     """
     try:
         with open(path, "rb") as f:
@@ -101,15 +201,21 @@ def plan_content(path: str, old_b: bytes, ascii_names: bool, plan: Plan) -> None
         plan.errors.append((path, f"nicht lesbar: {e.strerror}"))
         return
 
-    count = data.count(old_b)
-    if count == 0:
+    count = replacer.count_bytes(data)
+    unsupported = replacer.unsupported_bytes(data)
+    if not count and not unsupported:
         return
     if b"\0" in data:
-        plan.warnings.append((path, f"Binärdatei, {count} Vorkommen nicht ersetzt"))
-    elif not ascii_names and not is_utf8(data):
+        plan.warnings.append(
+            (path, f"Binärdatei, {count + len(unsupported)} Vorkommen nicht ersetzt"))
+        return
+    if not replacer.ascii and not is_utf8(data):
         plan.warnings.append((path, f"kein gültiges UTF-8, {count} Vorkommen nicht ersetzt"))
-    else:
+        return
+    if count:
         plan.contents.append((path, count))
+    if unsupported:
+        plan.warnings.append((path, describe_unsupported(unsupported)))
 
 
 def in_renamed_area(directory: str, root_abs: str, excludes: frozenset[str]) -> bool:
@@ -123,7 +229,7 @@ def in_renamed_area(directory: str, root_abs: str, excludes: frozenset[str]) -> 
     return not any(part in excludes for part in rel.split(os.sep))
 
 
-def map_link_target(link: str, target: str, root_abs: str, old: str, new: str,
+def map_link_target(link: str, target: str, root_abs: str, replacer: Replacer,
                     excludes: frozenset[str]) -> str:
     """Überträgt die Umbenennungen komponentenweise auf ein Symlink-Ziel (Abschnitt 4.5).
 
@@ -143,7 +249,7 @@ def map_link_target(link: str, target: str, root_abs: str, old: str, new: str,
             cur = os.path.dirname(cur)
         else:
             renamed = comp not in excludes and in_renamed_area(cur, root_abs, excludes)
-            parts.append(comp.replace(old, new) if renamed else comp)
+            parts.append(replacer.sub(comp) if renamed else comp)
             cur = os.path.join(cur, comp)
     return os.sep.join(parts)
 
@@ -170,11 +276,9 @@ def self_identity() -> tuple[int, int] | None:
     return (st.st_dev, st.st_ino)
 
 
-def build_plan(root: str, old: str, new: str, excludes: frozenset[str]) -> Plan:
+def build_plan(root: str, replacer: Replacer, excludes: frozenset[str]) -> Plan:
     plan = Plan()
     root_abs = os.path.abspath(root)
-    old_b = old.encode("utf-8")
-    ascii_names = old.isascii() and new.isascii()
     me = self_identity()
     targets: set[str] = set()
 
@@ -190,11 +294,11 @@ def build_plan(root: str, old: str, new: str, excludes: frozenset[str]) -> Plan:
         # Nur reguläre Dateien: Lesen eines FIFOs würde blockieren, Geräte-
         # dateien haben keinen "Inhalt"; Symlinks werden über ihr Ziel behandelt.
         if stat.S_ISREG(st.st_mode):
-            plan_content(path, old_b, ascii_names, plan)
+            plan_content(path, replacer, plan)
         elif stat.S_ISLNK(st.st_mode):
             target = os.readlink(path)
-            if old in target:
-                new_target = map_link_target(path, target, root_abs, old, new, excludes)
+            if replacer.count(target):
+                new_target = map_link_target(path, target, root_abs, replacer, excludes)
                 if new_target != target:
                     plan.links.append((path, target, new_target))
                 else:
@@ -202,9 +306,12 @@ def build_plan(root: str, old: str, new: str, excludes: frozenset[str]) -> Plan:
                         (path, "Symlink-Ziel: Vorkommen liegen außerhalb des Baums, nicht ersetzt"))
 
         name = os.path.basename(path)
-        if old not in name:
+        unsupported = replacer.unsupported(name)
+        if unsupported:
+            plan.warnings.append((path, "Name: " + describe_unsupported(unsupported)))
+        new_name = replacer.sub(name)
+        if new_name == name:
             continue
-        new_name = name.replace(old, new)
         dst = os.path.join(os.path.dirname(path), new_name)
         if new_name in (".", ".."):
             plan.errors.append((path, f"ungültiger neuer Name '{new_name}'"))
@@ -225,7 +332,7 @@ def build_plan(root: str, old: str, new: str, excludes: frozenset[str]) -> Plan:
 # Phasen 4–6: Ausführung
 # --------------------------------------------------------------------------
 
-def rewrite_file(path: str, old_b: bytes, new_b: bytes) -> None:
+def rewrite_file(path: str, replacer: Replacer) -> None:
     """Ersetzt den Inhalt atomar: temporäre Datei schreiben, fsync, umbenennen.
 
     Bei einem Abbruch liegt immer entweder die alte oder die neue Fassung vor,
@@ -234,7 +341,7 @@ def rewrite_file(path: str, old_b: bytes, new_b: bytes) -> None:
     """
     with open(path, "rb") as f:
         data = f.read()
-    new_data = data.replace(old_b, new_b)
+    new_data = replacer.sub_bytes(data)
     if new_data == data:
         return
 
@@ -265,13 +372,12 @@ def retarget_symlink(path: str, new_target: str) -> None:
         raise
 
 
-def apply_plan(plan: Plan, old: str, new: str, root: str) -> int:
+def apply_plan(plan: Plan, replacer: Replacer, root: str) -> int:
     """Führt den Plan aus und liefert die Anzahl fehlgeschlagener Operationen.
 
     Reihenfolge: Inhalte, Symlink-Ziele, dann Umbenennungen. Die ersten beiden
     Phasen arbeiten so noch auf den unveränderten Pfaden des Plans.
     """
-    old_b, new_b = old.encode("utf-8"), new.encode("utf-8")
     failures = 0
 
     def fail(path: str, reason: str) -> None:
@@ -281,7 +387,7 @@ def apply_plan(plan: Plan, old: str, new: str, root: str) -> int:
 
     for path, _ in plan.contents:
         try:
-            rewrite_file(path, old_b, new_b)
+            rewrite_file(path, replacer)
         except OSError as e:
             fail(path, e.strerror or str(e))
 
@@ -366,7 +472,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="changeName",
         description="Ersetzt ALT durch NEU in Ordnernamen, Dateinamen, Dateiinhalten "
-                    "und Symlink-Zielen unterhalb von VERZEICHNIS. "
+                    "und Symlink-Zielen unterhalb von VERZEICHNIS, in allen "
+                    "Schreibweisen im selben Stil (lstm/Lstm/LSTM -> abcd/Abcd/ABCD). "
                     "Ausgenommen: " + ", ".join(sorted(DEFAULT_EXCLUDES)) + ".",
         epilog="Fehlen ALT/NEU, werden sie interaktiv abgefragt. "
                "Dokumentation: docs/changeName.md")
@@ -375,6 +482,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                              "(wird selbst nicht umbenannt)")
     parser.add_argument("alt", metavar="ALT", nargs="?", help="zu ersetzender Name")
     parser.add_argument("neu", metavar="NEU", nargs="?", help="neuer Name")
+    parser.add_argument("-c", "--case-sensitive", action="store_true",
+                        help="nur exakt die eingegebene Schreibweise ersetzen")
     parser.add_argument("-n", "--dry-run", action="store_true",
                         help="nur anzeigen, was geändert würde")
     parser.add_argument("-y", "--yes", action="store_true",
@@ -403,12 +512,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"changeName: {problem}", file=sys.stderr)
         return 2
 
+    replacer = Replacer(old, new, ignore_case=not args.case_sensitive)
     excludes = DEFAULT_EXCLUDES | frozenset(args.exclude)
     print(f"Verzeichnis : {os.path.abspath(root)}")
-    print(f"Ersetzung   : '{old}' -> '{new}'")
+    print("Ersetzung   : " + ", ".join(f"'{a}' -> '{n}'" for a, n in replacer.changes().items())
+          + ("  (nur exakte Schreibweise)" if args.case_sensitive else ""))
     print(f"Ausgenommen : {', '.join(sorted(excludes))}")
 
-    plan = build_plan(root, old, new, excludes)
+    plan = build_plan(root, replacer, excludes)
     show_plan(plan, root)
     planning_failed = 1 if plan.errors else 0
 
@@ -422,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Abgebrochen, es wurde nichts verändert.")
         return 1
 
-    failures = apply_plan(plan, old, new, root)
+    failures = apply_plan(plan, replacer, root)
     done = len(plan.contents) + len(plan.links) + len(plan.renames) - failures
     print(f"\nFertig: {done} Änderungen durchgeführt, {failures} fehlgeschlagen.")
     return 1 if failures or plan.errors else 0
