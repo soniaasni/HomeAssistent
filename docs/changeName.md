@@ -14,7 +14,8 @@
 Dateiinhalten und Zielen symbolischer Links. Groß-/Kleinschreibung wird beim
 Suchen nicht unterschieden. Jedes Vorkommen wird durch *N* **in derselben
 Schreibweise** ersetzt: Mit *A* = `lstm` und *N* = `abcd` wird `lstm` zu
-`abcd`, `Lstm` zu `Abcd` und `LSTM` zu `ABCD` (Abschnitt 3.2).
+`abcd`, `Lstm` zu `Abcd` und `LSTM` zu `ABCD` – unabhängig davon, in welcher
+Schreibweise die Namen eingegeben werden (Abschnitt 3.1).
 Metadaten von Versionsverwaltungen (z. B. `.git`), Caches und
 Fremdabhängigkeiten werden ausgenommen. Das Verfahren arbeitet in getrennten
 Phasen: Es berechnet zunächst *alle* Änderungen, ohne etwas zu schreiben,
@@ -53,21 +54,82 @@ Dateinamen unzulässig bzw. bedeutungstragend).
 ### 3.1 Schreibweisen
 
 Eine **Schreibweise** ist eine Funktion *f*, die einer Zeichenkette eine
-Variante mit anderer Groß-/Kleinschreibung zuordnet. Unterstützt werden sechs
-Schreibweisen, geordnet nach absteigendem Vorrang (`CASE_STYLES` im Code):
+Variante mit anderer Groß-/Kleinschreibung zuordnet. Ersetzt wird jede Form
+*f*(*A*) durch *f*(*N*) – **dieselbe Funktion wird auf beide Namen
+angewandt**. Bausteine sind die vollständigen Unicode-Abbildungen lower,
+upper und title von Python [8]. Sie können die Länge ändern
+(upper(`straße`) = `STRASSE`), und die Titelschreibung eines Zeichens kann
+von seiner Großschreibung abweichen (title(`ǉ`) = `ǈ`, upper(`ǉ`) = `Ǉ`).
 
-| Vorrang | Schreibweise | *f*(*s*) | *A* = `lstm`, *N* = `abcd` | *A* = `HomeAssistent`, *N* = `SmartHome` |
-|---|---|---|---|---|
-| *f*₀ | wie eingegeben | *s* | `lstm` → `abcd` | `HomeAssistent` → `SmartHome` |
-| *f*₁ | klein | lower(*s*) | (= *f*₀) | `homeassistent` → `smarthome` |
-| *f*₂ | GROSS | upper(*s*) | `LSTM` → `ABCD` | `HOMEASSISTENT` → `SMARTHOME` |
-| *f*₃ | erstes Zeichen groß | upper(*s*₁) · *s*₂…*s*ₙ | `Lstm` → `Abcd` | (= *f*₀) |
-| *f*₄ | erstes Zeichen klein | lower(*s*₁) · *s*₂…*s*ₙ | (= *f*₀) | `homeAssistent` → `smartHome` |
-| *f*₅ | erstes groß, Rest klein | upper(*s*₁) · lower(*s*₂…*s*ₙ) | (= *f*₃) | `Homeassistent` → `Smarthome` |
+- capitalized(*s*) = title(*s*₁) · lower(*s*₂…*s*ₙ), z. B. `lstm` → `Lstm`.
+- *s* hat **Binnenmajuskeln** (CamelCase), wenn
+  *s* ∉ { lower(*s*), upper(*s*), capitalized(*s*) }. Beispiele mit:
+  `homeAssistent`, `LSTMCell`; ohne: `lstm`, `Lstm`, `LSTM`, `lstm2_v3`.
+- lower_first(*s*): Anfang klein, Binnenmajuskeln bleiben. Ein führendes
+  Akronym wird bis vor den Beginn des nächsten Worts klein geschrieben
+  (`HomeAssistent` → `homeAssistent`, `LSTMCell` → `lstmCell`,
+  `IOError` → `ioError`), wie in der üblichen camelCase-Konvention.
+- upper_first(*s*) = title(*s*₁) · *s*₂…*s*ₙ.
 
-lower und upper sind die vollständigen Unicode-Abbildungen von Python
-(`str.lower`, `str.upper`) [8]; sie können die Länge ändern
-(upper(`straße`) = `STRASSE`).
+Die Schreibweisen in absteigendem Vorrang (`CASE_STYLES` im Code):
+
+| Vorrang | Schreibweise | *f*(*s*), *s* mit Binnenmajuskeln | *f*(*s*), *s* ohne | `lstm` / `abcd` | `HomeAssistent` / `SmartHome` |
+|---|---|---|---|---|---|
+| 1 | lowerCamel | lower_first(*s*) | lower(*s*) | `lstm` → `abcd` | `homeAssistent` → `smartHome` |
+| 2 | UpperCamel | upper_first(*s*) | capitalized(*s*) | `Lstm` → `Abcd` | `HomeAssistent` → `SmartHome` |
+| 3 | GROSS | upper(*s*) | upper(*s*) | `LSTM` → `ABCD` | `HOMEASSISTENT` → `SMARTHOME` |
+| 4 | klein | lower(*s*) | lower(*s*) | (= 1) | `homeassistent` → `smarthome` |
+| 5 | erstes groß, Rest klein | capitalized(*s*) | capitalized(*s*) | (= 2) | `Homeassistent` → `Smarthome` |
+| 6 | wie eingegeben | *s* | *s* | (= 1) | (= 2) |
+
+Zeile 6 stellt nur sicher, dass die eingegebene Form von *A* in jedem Fall
+gesucht wird; praktisch fällt sie immer mit einer vorrangigen Form zusammen.
+
+**Formenmenge und Zuordnung.** Die Menge der gesuchten Formen ist
+𝒜 = { *f*ᵢ(*A*) | *i* = 1…6 }. Jede Form *a* ∈ 𝒜 wird ersetzt durch
+
+τ(*a*) = *f*ᵢ(*N*) mit *i* = min { *j* | *f*ⱼ(*A*) = *a* }.
+
+**Begründung der Vorrangregel.** Fallen Schreibweisen von *A* zusammen,
+entscheidet die vorrangige. Das betrifft vor allem Namen ohne
+Binnenmajuskeln: Für *A* = `lstm` sind lowerCamel(*A*) und lower(*A*)
+dieselbe Form `lstm`. Hat *N* Binnenmajuskeln (`convLstm`), liefern die
+beiden Schreibweisen Verschiedenes; lowerCamel steht vorn, damit sie
+erhalten bleiben: `lstm` → `convLstm`, `Lstm` → `ConvLstm`,
+`LSTM` → `CONVLSTM`. Hat *N* keine Binnenmajuskeln, liefern beide dasselbe.
+Bei einbuchstabigen Namen ist `X` zugleich UpperCamel und GROSS; es gilt
+UpperCamel (*A* = `x`, *N* = `pos`: `X` → `Pos`).
+
+**Unabhängigkeit von der Eingabe.** Weil jede Schreibweise auf *A* und *N*
+gleichermaßen angewandt wird, hängt das Ergebnis nicht davon ab, wie die
+Namen eingetippt werden: `lstm abcd`, `LSTM abcd` und `Lstm ABCD` ergeben
+dieselbe Zuordnung `lstm` → `abcd`, `Lstm` → `Abcd`, `LSTM` → `ABCD`;
+`homeAssistent SmartHome` und `HomeAssistent smartHome` ergeben dieselben
+fünf Paare (Tests `test_mapping_is_independent_of_typed_case`,
+`test_camel_case_is_independent_of_typed_first_letter`). Nur die
+Binnenmajuskeln der Eingabe tragen Information. Daraus folgt eine
+**Eingabeempfehlung:** zusammengesetzte Namen mit Binnenmajuskeln eingeben
+(`homeAssistent` oder `HomeAssistent`). Aus `homeassistent` ist die Form
+`HomeAssistent` nicht ableitbar; sie würde als nicht unterstützte
+Schreibweise gemeldet.
+
+**Entwicklungsgeschichte.** Eine erste Fassung gab der eingegebenen Form
+Vorrang (τ(*A*) = *N* wörtlich). Die unabhängige Prüfung (Abschnitt 8.2)
+zeigte, dass das Ergebnis dann von der Eingabe abhängt: `LSTM abcd` ersetzte
+`LSTM` durch `abcd`; `homeAssistent SmartHome` gab Variable und Klasse
+denselben Namen `SmartHome`; bei `IO net` entstand die Kunstform `iO` (erstes
+Zeichen klein), die `taxiOrder` unbemerkt zu `taxnetrder` verfälschte. Die
+jetzige Definition behebt alle drei Fälle; Kunstformen wie `iO` oder
+`lSTM` entstehen nicht mehr, weil Namen ohne Binnenmajuskeln nur die Formen
+klein, GROSS und `Xxx` haben.
+
+**Nur die Schreibweise verschieden.** Ist lower(*A*) = lower(*N*)
+(z. B. `lstm LSTM`), wäre die stiltreue Zuordnung (fast) die Identität. Die
+Absicht ist dann offensichtlich, genau die eingegebene Form umzuschreiben;
+das Werkzeug ersetzt in diesem Fall automatisch exakt und weist im Kopf der
+Ausgabe darauf hin.
+
+**Exakter Modus** (Option `-c`): 𝒜 = { *A* }, τ(*A*) = *N*.
 
 **Ziffern und Sonderzeichen bleiben unverändert.** Groß- und Kleinschreibung
 ist in Unicode eine Eigenschaft von Buchstaben, nicht von Tasten: Dass auf
@@ -88,29 +150,9 @@ ergibt:
 In einer Form wie `lstm2_v3` → `LSTM2_V3` ändern sich daher nur die
 Buchstaben (Test `test_no_case_style_changes_a_digit_or_ascii_symbol`
 prüft die ersten beiden Aussagen für alle sechs Schreibweisen). Beginnt *A*
-mit einer Ziffer (`2lstm`), lassen *f*₃ und *f*₄ das erste Zeichen
-unverändert und fallen mit anderen Formen zusammen; ersetzt werden dann
-`2lstm` und `2LSTM`, eine Form `2Lstm` wird als nicht unterstützt gemeldet.
-
-**Formenmenge und Zuordnung.** Die Menge der gesuchten Formen ist
-𝒜 = { *f*ᵢ(*A*) | *i* = 0…5 }. Jede Form *a* ∈ 𝒜 wird ersetzt durch
-
-τ(*a*) = *f*ᵢ(*N*) mit *i* = min { *j* | *f*ⱼ(*A*) = *a* }.
-
-Fallen mehrere Schreibweisen von *A* zusammen (bei `lstm` sind *f*₀, *f*₁ und
-*f*₄ dieselbe Form), entscheidet also die vorrangige. **Begründung der
-Vorrangregel:** Das eingegebene Paar (*A*, *N*) ist die Referenz. Mit
-*A* = `lstm` und *N* = `convLstm` wird `lstm` zu `convLstm` (*f*₀) und
-nicht zu `convlstm` (*f*₁); die Binnengroßschreibung des neuen Namens bleibt
-erhalten. `Lstm` wird zu `ConvLstm` (*f*₃), `LSTM` zu `CONVLSTM` (*f*₂).
-
-Daraus folgt eine **Eingabeempfehlung:** *A* in der informativsten Form
-eingeben, bei zusammengesetzten Namen also in CamelCase. Aus `HomeAssistent`
-sind alle Formen der Tabelle ableitbar; aus `homeassistent` ist die Form
-`HomeAssistent` nicht ableitbar (sie wäre eine nicht unterstützte
-Schreibweise, siehe unten).
-
-**Exakter Modus** (Option `-c`): 𝒜 = { *A* }, τ(*A*) = *N*.
+mit einer Ziffer (`2lstm`), lässt title das erste Zeichen unverändert, und
+die Formen fallen zusammen; ersetzt werden dann `2lstm` und `2LSTM`, eine
+Form `2Lstm` wird als nicht unterstützt gemeldet.
 
 ### 3.2 Ersetzungsfunktion
 
@@ -141,9 +183,9 @@ einzigen Durchlauf; das Ergebnis wird nicht erneut durchsucht. Eigenschaften:
 3. **Keine Injektivität:** Verschiedene Namen können auf denselben Namen
    abgebildet werden (*A* = `aa`, *N* = `a`: `xaaa` ↦ `xaa` und
    `xaaaa` ↦ `xaa`). Daraus entstehen Namenskonflikte (Abschnitt 4.4).
-4. **Identische Paare:** Ist τ(*a*) = *a* (z. B. *A* = `lstm`, *N* = `LSTM`:
-   die Form `LSTM` bleibt `LSTM`), wird der Treffer weder als Änderung gezählt
-   noch umbenannt.
+4. **Identische Paare:** Ist τ(*a*) = *a* (z. B. *A* = `straße`,
+   *N* = `Strasse`: upper ergibt für beide `STRASSE`), wird der Treffer weder
+   als Änderung gezählt noch umbenannt.
 
 **Warum keine allgemeine Suche ohne Groß-/Kleinschreibung?** Naheliegend wäre
 `re.IGNORECASE`. Das ist aus zwei Gründen ungeeignet: (a) Für ein beliebig
@@ -158,9 +200,15 @@ ersetzt genau die dokumentierten Schreibweisen.
 **Nicht unterstützte Schreibweisen.** Vorkommen, die *A* ohne Beachtung der
 Groß-/Kleinschreibung gleichen, aber nicht in 𝒜 liegen (z. B. `lStM`), werden
 **nicht ersetzt, aber gemeldet** – für Dateiinhalte und Namen. Zur Erkennung
-dient eine Suche mit `re.IGNORECASE`; bei ASCII-*A* auf Byte-Ebene
-(ASCII-Faltung), sonst auf dem als UTF-8 dekodierten Text. Diese Suche dient
-nur der Meldung, nie der Ersetzung.
+dient eine Suche mit `re.IGNORECASE`, und zwar nur in den Abschnitten
+**zwischen** den Treffern von σ: Ein Vorkommen, das einen ersetzten Treffer
+überlappt (`oTTO` in `oTTOtto` bei *A* = `otto`), existiert nach der
+Ersetzung nicht mehr unverändert und wird daher nicht gemeldet. Bei
+ASCII-*A* wird nur ASCII gefaltet (für Namen und Inhalte gleich), damit
+z. B. das Kelvin-Zeichen nicht als Schreibweise von `k` gilt; bei
+Nicht-ASCII-*A* wird der als UTF-8 dekodierte Text mit Unicode-Faltung
+durchsucht (ungültige Bytes werden dabei mit `surrogateescape` überbrückt).
+Diese Suche dient nur der Meldung, nie der Ersetzung.
 
 ### 3.3 Anwendung auf den Baum
 
@@ -258,6 +306,18 @@ werden daher ebenfalls als binär behandelt – das ist gewollt, da eine
 Ersetzung von UTF-8-Bytes in ihnen falsch wäre. Binärdateien werden **nie**
 verändert (R4), Vorkommen darin aber gemeldet, damit der Anwender sie ggf.
 von Hand anpassen kann (z. B. Bilder, Office-Dokumente, die ZIP-Archive sind).
+Gezählt werden dabei die Formen in UTF-8 sowie – damit auch
+UTF-16/-32-Textdateien gemeldet werden – in UTF-16 und UTF-32 (je
+Little- und Big-Endian). Für die breiten Kodierungen wird das **Maximum**
+über die vier Kodierungen gezählt, nicht die Summe: Das Big-Endian-Muster
+`\0l\0s\0t\0m` passt nach einem Leerzeichen auch versetzt in
+Little-Endian-Text und würde sonst doppelt zählen.
+
+**Dateinamen** werden nach derselben Regel behandelt wie Inhalte: Enthält
+eine Form Nicht-ASCII-Zeichen und ist der Name selbst kein gültiges UTF-8
+(z. B. ein Latin-1-Name), wird er nicht umbenannt, sondern gemeldet; sonst
+entstünde ein Name aus gemischten Kodierungen. Mit reinen ASCII-Formen ist
+die Umbenennung auch solcher Namen byte-genau korrekt (Fall 1).
 
 ### 4.4 Umbenennung: Reihenfolge und Konfliktfreiheit
 
@@ -316,8 +376,13 @@ Komponente, vom Ordner des Links aus durchlaufen (bei absoluten Zielen von
 `/` aus). Dabei wird der aktuelle absolute Ort *d* mitgeführt (`..` →
 Elternordner, Name → Unterordner). Eine Namenskomponente *c* wird genau dann
 durch σ(*c*) ersetzt, wenn *d* innerhalb des Startordners, aber nicht in
-einem ausgeschlossenen Bereich liegt und *c* selbst nicht ausgeschlossen ist –
-also genau dann, wenn Phase 6 den Eintrag *d*/*c* umbenennt. Damit ist das
+einem ausgeschlossenen Bereich liegt, *c* selbst nicht ausgeschlossen ist und
+die Umbenennung von *d*/*c* nicht abgelehnt wurde (Konflikt, ungültiger Name,
+Kodierung) – also genau dann, wenn Phase 6 den Eintrag *d*/*c* umbenennt.
+Dazu werden Linkziele erst geplant, nachdem alle Umbenennungen geplant sind.
+Ohne diese Bedingung würde ein Link auf `lstm.py`, dessen Umbenennung wegen
+einer vorhandenen `gru.py` abgelehnt wird, stillschweigend auf die fremde
+Datei `gru.py` zeigen. Damit ist das
 neue Ziel die Abbildung des alten Ziels unter derselben Umbenennung wie der
 Baum. Relative Ziele bleiben relativ, absolute absolut; Komponenten außerhalb
 des Startordners bleiben unverändert.
@@ -385,9 +450,13 @@ lassen sich mit `-e NAME` (mehrfach) ausnehmen, z. B. `-e build -e dist`.
    Wörter. Ohne Unterscheidung der Groß-/Kleinschreibung trifft z. B.
    *A* = `cat` auch `BobCat` oder `CATALOG`. Vor der Ausführung die Vorschau
    bzw. den Probelauf (`-n`) prüfen; bei Bedarf `-c` verwenden.
-3. **Ein-Buchstaben-Namen:** Für *A* = `x` ist `X` sowohl GROSS (*f*₂) als
-   auch „erster Buchstabe groß“ (*f*₃); es gilt der Vorrang von *f*₂
-   (*N* = `pos`: `X` → `POS`).
+3. **Ein-Buchstaben-Namen:** Für *A* = `x` ist `X` sowohl UpperCamel als
+   auch GROSS; es gilt der Vorrang von UpperCamel (*N* = `pos`: `X` → `Pos`).
+   **Akronyme in Binnenstellung** (`myHTTPServer`) werden nicht in Wörter
+   zerlegt; lower_first behandelt nur ein führendes Akronym.
+   **Sprachspezifische Regeln** (türkisches `İ`/`ı`) werden nicht
+   berücksichtigt; es gelten die sprachunabhängigen Unicode-Abbildungen
+   (lower(`İ`) = `i` + U+0307).
 4. **Keine Idempotenz** (Abschnitt 3.2): Das Werkzeug nur einmal ausführen.
 5. **Startordner:** wird nicht umbenannt; danach ggf. von Hand
    (`cd .. && mv Alt Neu`).
@@ -413,14 +482,17 @@ lassen sich mit `-e NAME` (mehrfach) ausnehmen, z. B. `-e build -e dist`.
     (Pythons Standardbibliothek bietet kein `RENAME_NOREPLACE`).
 11. **Symlinks** werden lexikalisch aufgelöst (Abschnitt 4.5). Führt ein
     Linkziel per `..` aus einem verlinkten Ordner heraus, kann die
-    tatsächliche Auflösung durch das Betriebssystem abweichen. Scheitert eine
-    Umbenennung wegen eines Konflikts, zeigt ein angepasster Link auf den
-    neuen, nicht entstandenen Namen. Nicht unterstützte Schreibweisen in
-    Linkzielen werden nicht gemeldet.
+    tatsächliche Auflösung durch das Betriebssystem abweichen. Links werden
+    auf die *geplanten* Umbenennungen abgestimmt; scheitert eine Umbenennung
+    erst bei der Ausführung (Wettlauf, fehlende Rechte), kann ein angepasster
+    Link ins Leere zeigen. Nicht unterstützte Schreibweisen in Linkzielen
+    werden nicht gemeldet.
 12. **Plattform:** entwickelt und getestet unter Linux; macOS (POSIX) sollte
     sich gleich verhalten. Windows ist nicht getestet.
 
 ## 8 Validierung
+
+### 8.1 Automatisierte Tests
 
 Die Testsuite [`tests/test_changeName.py`](../tests/test_changeName.py)
 erzeugt für jeden Test einen frischen temporären Verzeichnisbaum, führt das
@@ -436,10 +508,10 @@ einem eigenen Prozess auf.
 | `test_preserves_line_endings_and_file_mode` | bitgenaue Erhaltung von `\r\n`, Zugriffsrechte | R4 |
 | `test_leaves_no_temporary_files` | keine Reste des atomaren Schreibens | R4 |
 | `test_lower_capitalized_and_upper_are_mapped_in_same_style` | `lstm`/`Lstm`/`LSTM` → `abcd`/`Abcd`/`ABCD` in Ordnern, Dateien, Inhalten | R1, R7 |
-| `test_typed_form_has_precedence` | Vorrangregel (*A* = `lstm`, *N* = `convLstm`) | R7 |
+| `test_humps_of_new_name_are_kept` | Vorrangregel (*A* = `lstm`, *N* = `convLstm`) | R7 |
 | `test_camel_case_name_variants` | alle fünf Formen eines CamelCase-Namens | R7 |
 | `test_unsupported_style_is_reported_not_replaced` | `lStM` in Inhalt und Name: gemeldet, nicht ersetzt | R5, R7 |
-| `test_changing_only_the_case` | identische Paare (*N* = `LSTM`): keine Zählung, kein Konflikt | R4, R7 |
+| `test_changing_only_the_case` | nur Schreibweise verschieden (`lstm LSTM`): exakte Ersetzung | R4, R7 |
 | `test_non_ascii_case_variants` | Formen mit Umlauten | R7 |
 | `test_sharp_s_uppercase_changes_length` | upper(`straße`) = `STRASSE` wird erkannt | R7 |
 | `test_ascii_variants_in_latin1_file` | Formen in Latin-1-Datei (Fall 1 aus 4.3) | R4, R7 |
@@ -447,6 +519,16 @@ einem eigenen Prozess auf.
 | `test_name_starting_with_digit` | *A* beginnt mit Ziffer | R7 |
 | `test_no_case_style_changes_a_digit_or_ascii_symbol` | keine Schreibweise verändert eine der 680 Unicode-Dezimalziffern oder ein ASCII-Sonderzeichen | R7 |
 | `test_replacer_mapping_and_precedence` | Formenmenge, Zuordnung τ, Terminierung von σ | R7 |
+| `test_mapping_is_independent_of_typed_case` | alle 9 Kombinationen aus `lstm`/`Lstm`/`LSTM` × `abcd`/`Abcd`/`ABCD` ergeben dieselbe Zuordnung | R7 |
+| `test_camel_case_is_independent_of_typed_first_letter` | `homeAssistent SmartHome` = `HomeAssistent smartHome` | R7 |
+| `test_acronyms_produce_no_artificial_forms` | keine Kunstform `iO` (`taxiOrder` bleibt), `LSTMCell` → `lstmCell` | R4, R7 |
+| `test_first_letter_uses_titlecase` | Titelschreibung `ǈ` statt `Ǉ` | R7 |
+| `test_report_ignores_text_consumed_by_a_replacement` | Meldungen nur zwischen den Treffern von σ | R5 |
+| `test_ascii_report_ignores_unicode_folding` | Kelvin-Zeichen ist keine Schreibweise von `k` | R5 |
+| `test_only_unsupported_occurrences_are_summarised` | Schlusszeile widerspricht den Meldungen nicht | R5 |
+| `test_non_utf8_warning_counts_all_occurrences` | Zählung in der Meldung „kein gültiges UTF-8“ | R5 |
+| `test_utf16_files_are_reported` | UTF-16-Datei: gemeldet, nicht verändert | R4, R5 |
+| `test_non_utf8_name_is_not_mixed_with_utf8` | Latin-1-Dateiname: keine gemischte Kodierung; ASCII-Ersetzung byte-genau | R4 |
 | `test_vcs_cache_and_dependency_dirs_are_untouched` | Ausnahmen inkl. `.git` als Datei; `.gitignore` wird bearbeitet | R3 |
 | `test_additional_exclude_option` | Option `-e` | R3 |
 | `test_binary_files_are_reported_but_not_modified` | NUL-Heuristik | R4 |
@@ -460,6 +542,8 @@ einem eigenen Prozess auf.
 | `test_starting_directory_itself_is_not_renamed` | Startordner bleibt | R2 |
 | `test_relative_link_follows_renamed_entries` | Linkziel folgt der Umbenennung | R6 |
 | `test_link_through_unrenamed_start_directory` | Startordner namens *A* im Linkziel bleibt erhalten | R6 |
+| `test_link_through_case_variant_dirs` | Linkziel `LSTM/Lstm/lstm.txt` → `ABCD/Abcd/abcd.txt` | R6, R7 |
+| `test_link_is_not_pointed_at_a_conflicting_entry` | Link folgt keiner abgelehnten Umbenennung auf eine fremde Datei | R4, R6 |
 | `test_targets_outside_the_tree_are_untouched` | Ziele außerhalb des Baums | R4 |
 | `test_linked_directories_are_not_followed` | keine Änderung außerhalb des Baums | R4 |
 | `test_interactive_invocation` | Aufruf `./changeName .` mit interaktiver Eingabe | R2, R5 |
@@ -472,8 +556,44 @@ einem eigenen Prozess auf.
 python3 -m unittest discover -s tests -v
 ```
 
-**Ergebnis (2026-10-14):** 35 Tests, alle bestanden; Python 3.13.16,
+**Ergebnis (2026-10-14):** 47 Tests, alle bestanden; Python 3.13.16,
 Linux 6.18.
+
+### 8.2 Unabhängige adversariale Prüfung
+
+Zusätzlich zu den eigenen Tests wurde die Schreibweisen-Funktion von
+unabhängigen Prüfern (KI-Agenten ohne Kenntnis der eigenen Tests) gezielt
+angegriffen. Methode: Drei Prüfer mit getrennten Schwerpunkten
+(Semantik von σ, Zusammenspiel im Verzeichnisbaum, Unicode/Kodierungen)
+suchten Fehler und mussten jeden Befund mit einer tatsächlich ausgeführten
+Reproduktion belegen. Jeder Befund wurde anschließend von einem weiteren,
+unabhängigen Prüfer von Grund auf nachgestellt und nur bei erfolgreicher
+Reproduktion und echtem Mangel bestätigt. Alle Versuche liefen in
+temporären Kopien; das Repository blieb unberührt.
+
+**Runde 1** (Fassung mit Vorrang der eingegebenen Form): 17 Befunde,
+12 bestätigt, 5 verworfen. Verworfen wurden: türkisches `İ` und
+NFD-Normalformen (dokumentierte Grenzen, Abschnitt 7), das Kelvin-Zeichen in
+Namen (Duplikat eines bestätigten Befunds), das Zusammenfallen von
+`lstm`/`LSTM` bei *N* = `GRU` (durch die Neudefinition gegenstandslos: jetzt
+`gru`/`Gru`/`GRU`) sowie der Link-Befund in der letzten Tabellenzeile.
+Bestätigt bzw. behoben:
+
+| Befund | Behebung |
+|--------|----------|
+| Ergebnis hängt von der Eingabe ab (`LSTM abcd`, `homeAssistent SmartHome`); Kunstform `iO` verfälscht `taxiOrder` | Neudefinition der Schreibweisen (Abschnitt 3.1) |
+| Meldung nennt Text, der durch eine Ersetzung verbraucht wurde (`oTTO` in `oTTOtto`) | Suche nur zwischen den Treffern von σ |
+| Namen mit Unicode-, Inhalte mit ASCII-Faltung geprüft (Kelvin-Zeichen) | ASCII-Faltung für ASCII-*A* überall |
+| „kein gültiges UTF-8, 0 Vorkommen“ (drei Befunde, unabhängig voneinander) | nicht unterstützte Vorkommen mitgezählt |
+| Schlusszeile „Keine Vorkommen gefunden“ direkt nach Meldungen | eigene Schlusszeile bei Meldungen |
+| Linkziele mit Schreibweisen nicht getestet | neue Tests |
+| Nicht-ASCII-*A*: nicht unterstützte Vorkommen in ungültigem UTF-8 übersehen | Dekodierung mit `surrogateescape` |
+| `upper` statt Titelschreibung für das erste Zeichen (`Ǉ` statt `ǈ`) | title für das erste Zeichen |
+| Latin-1-Dateiname erhält UTF-8-Bytes | Regel aus 4.3 auch für Namen |
+| UTF-16-Dateien nicht gemeldet, obwohl dokumentiert | Zählung in UTF-16/-32 |
+| Link wird bei abgelehnter Umbenennung auf fremde Datei umgebogen (verworfen als „dokumentiert“, aber als Datenrisiko dennoch behoben) | zweistufige Planung, Abschnitt 4.5 |
+
+**Runde 2** (jetzige Fassung): siehe unten.
 
 ## 9 Bedienung
 

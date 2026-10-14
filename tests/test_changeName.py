@@ -120,8 +120,8 @@ class CaseStyleTest(ChangeNameTestCase):
         self.assertEqual((self.tmp / "abcd/Abcd.py").read_text(), "abcd = Abcd(ABCD)\n")
         self.assertEqual((self.tmp / "ABCD.md").read_text(), "# ABCD\n")
 
-    def test_typed_form_has_precedence(self):
-        # Neuer Name in camelCase: die eingegebene Form wird wörtlich übernommen.
+    def test_humps_of_new_name_are_kept(self):
+        # NEU in camelCase, ALT ohne Binnenmajuskeln: lower_camel hat Vorrang vor lower.
         self.write("a.txt", "lstm Lstm LSTM")
         self.run_tool("lstm", "convLstm", "--yes")
         self.assertEqual((self.tmp / "a.txt").read_text(), "convLstm ConvLstm CONVLSTM")
@@ -143,7 +143,7 @@ class CaseStyleTest(ChangeNameTestCase):
         self.assertIn("'LsTm'", out)
 
     def test_changing_only_the_case(self):
-        # Identische Paare (LSTM -> LSTM) dürfen weder zählen noch Konflikte melden.
+        # Nur Schreibweise verschieden: exakte Ersetzung, LSTM bleibt unangetastet.
         self.write("lstm.txt", "lstm LSTM")
         self.write("LSTM.md", "x")
         code, out, _ = self.run_tool("lstm", "LSTM", "--yes")
@@ -193,6 +193,69 @@ class CaseStyleTest(ChangeNameTestCase):
         self.assertEqual(cn.Replacer("lstm", "abcd", ignore_case=False).pairs, {"lstm": "abcd"})
         # Treffer werden nicht erneut durchsucht: σ terminiert auch bei NEU ⊃ ALT.
         self.assertEqual(cn.Replacer("a", "aA").sub("a A"), "aA AA")
+
+    def test_mapping_is_independent_of_typed_case(self):
+        expected = {"lstm": "abcd", "Lstm": "Abcd", "LSTM": "ABCD"}
+        for old in ("lstm", "Lstm", "LSTM"):
+            for new in ("abcd", "Abcd", "ABCD"):
+                self.assertEqual(cn.Replacer(old, new).pairs, expected, (old, new))
+
+    def test_camel_case_is_independent_of_typed_first_letter(self):
+        for old, new in (("homeAssistent", "SmartHome"), ("HomeAssistent", "smartHome")):
+            self.assertEqual(cn.Replacer(old, new).sub("homeAssistent = HomeAssistent()"),
+                             "smartHome = SmartHome()", (old, new))
+
+    def test_acronyms_produce_no_artificial_forms(self):
+        r = cn.Replacer("IO", "net")
+        self.assertEqual(r.pairs, {"io": "net", "Io": "Net", "IO": "NET"})
+        self.assertEqual(r.sub("taxiOrder"), "taxiOrder")
+        self.assertEqual(r.unsupported("taxiOrder"), ["iO"])
+        self.assertEqual(cn.lower_first("LSTMCell"), "lstmCell")
+        self.assertEqual(cn.lower_first("IOError"), "ioError")
+        self.assertEqual(cn.Replacer("LSTMCell", "GRUCell").sub("lstmCell LSTMCell"),
+                         "gruCell GRUCell")
+
+    def test_first_letter_uses_titlecase(self):
+        # ǉ (U+01C9) hat eine eigene Titelform ǈ (U+01C8), verschieden von der Großform Ǉ.
+        self.assertEqual(cn.Replacer("lstm", "ǉubav").pairs["Lstm"], "ǈubav")
+
+    def test_report_ignores_text_consumed_by_a_replacement(self):
+        r = cn.Replacer("otto", "hans")
+        self.assertEqual(r.unsupported("oTTOtto"), [])  # 'oTTO' überlappt 'Otto'
+        self.assertEqual(r.unsupported("oTTO"), ["oTTO"])
+
+    def test_ascii_report_ignores_unicode_folding(self):
+        # Kelvin-Zeichen K (U+212A) ist keine Schreibweise von 'k'.
+        self.assertEqual(cn.Replacer("kit", "box").unsupported("Kit"), [])
+        self.assertEqual(cn.Replacer("kit", "box").unsupported_bytes("Kit".encode()), [])
+
+    def test_only_unsupported_occurrences_are_summarised(self):
+        self.write("a.txt", "lStM")
+        code, out, _ = self.run_tool("lstm", "abcd", "--yes")
+        self.assertEqual(code, 0)
+        self.assertIn("Keine ersetzbaren Vorkommen; 1 Stelle(n)", out)
+
+    def test_non_utf8_warning_counts_all_occurrences(self):
+        self.write("latin1.txt", "café lStM lstm".encode("latin-1"))
+        _, out, _ = self.run_tool("lstm", "läng", "--yes")
+        self.assertIn("kein gültiges UTF-8, 2 Vorkommen nicht ersetzt", out)
+
+    def test_utf16_files_are_reported(self):
+        path = self.write("notes.txt", "lstm LSTM\n".encode("utf-16"))
+        before = path.read_bytes()
+        _, out, _ = self.run_tool("lstm", "abcd", "--yes")
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIn("notes.txt: Binärdatei, 2 Vorkommen nicht ersetzt", out)
+
+    def test_non_utf8_name_is_not_mixed_with_utf8(self):
+        root = os.fsencode(self.tmp)
+        open(os.path.join(root, b"lstm_\xe9.txt"), "w").close()  # Latin-1-Name
+        _, out, _ = self.run_tool("lstm", "läng", "--yes")
+        self.assertIn(b"lstm_\xe9.txt", os.listdir(root))
+        self.assertIn("kein gültiges UTF-8, nicht umbenannt", out)
+        # Mit ASCII-Formen ist die Umbenennung byte-genau korrekt (Fall 1, 4.3).
+        self.run_tool("lstm", "abcd", "--yes")
+        self.assertIn(b"abcd_\xe9.txt", os.listdir(root))
 
 
 class ExclusionTest(ChangeNameTestCase):
@@ -310,6 +373,28 @@ class SymlinkTest(ChangeNameTestCase):
         self.assertEqual(os.readlink(root / "l"), "../Foo/Bar.txt")
         self.assertEqual((root / "l").read_text(), "x")
 
+    def test_link_through_case_variant_dirs(self):
+        self.write("LSTM/Lstm/lstm.txt", "x")
+        os.symlink("LSTM/Lstm/lstm.txt", self.tmp / "link")
+
+        self.run_tool("lstm", "abcd", "--yes")
+
+        self.assertEqual(os.readlink(self.tmp / "link"), "ABCD/Abcd/abcd.txt")
+        self.assertEqual((self.tmp / "link").read_text(), "x")
+
+    def test_link_is_not_pointed_at_a_conflicting_entry(self):
+        # lstm.py kann nicht zu gru.py werden (existiert); der Link darf nicht
+        # stillschweigend auf die fremde Datei gru.py umgebogen werden.
+        self.write("lstm.py", "eigener Code")
+        self.write("gru.py", "fremder Code")
+        os.symlink("lstm.py", self.tmp / "main.py")
+
+        code, _, _ = self.run_tool("lstm", "gru", "--yes")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(os.readlink(self.tmp / "main.py"), "lstm.py")
+        self.assertEqual((self.tmp / "main.py").read_text(), "eigener Code")
+
     def test_targets_outside_the_tree_are_untouched(self):
         os.symlink("/nicht/vorhanden/Foo", self.tmp / "extern")
         code, out, _ = self.run_tool("Foo", "Bar", "--yes")
@@ -356,10 +441,10 @@ class CommandLineTest(ChangeNameTestCase):
     def test_script_does_not_modify_itself(self):
         original = (self.tmp / "changeName").read_bytes()
         self.write("notiz.txt", "argparse")
-        result = self.invoke("argparse", "Zzz", "--yes")
+        result = self.invoke("argparse", "zzz", "--yes")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.tmp / "changeName").read_bytes(), original)
-        self.assertEqual((self.tmp / "notiz.txt").read_text(), "Zzz")
+        self.assertEqual((self.tmp / "notiz.txt").read_text(), "zzz")
 
 
 if __name__ == "__main__":

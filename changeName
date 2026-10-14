@@ -8,8 +8,8 @@ Aufruf:
     ./changeName . ALT NEU -n       # Probelauf: nur anzeigen, nichts ändern
     ./changeName . ALT NEU -c       # nur exakt die eingegebene Schreibweise
 
-Beispiel: `./changeName . lstm abcd` ersetzt lstm -> abcd, LSTM -> ABCD und
-Lstm -> Abcd.
+Beispiel: `./changeName . lstm abcd` ersetzt lstm -> abcd, Lstm -> Abcd und
+LSTM -> ABCD, gleich in welcher Schreibweise ALT und NEU eingegeben werden.
 
 Das Verfahren (Phasen, Korrektheitsargumente, Grenzen) ist in
 docs/changeName.md dokumentiert; die Abschnittsnummern in den Kommentaren
@@ -40,44 +40,88 @@ DEFAULT_EXCLUDES = frozenset({
 
 TEMP_PREFIX = ".changeName-"
 
+# Kodierungen, in denen Vorkommen in Binärdateien zusätzlich gesucht und
+# gemeldet (nie ersetzt) werden, z. B. UTF-16-Textdateien (Abschnitt 4.3).
+WIDE_ENCODINGS = ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
+
 
 # --------------------------------------------------------------------------
-# Ersetzungsfunktion σ (Abschnitt 3)
+# Schreibweisen und Ersetzungsfunktion σ (Abschnitt 3)
 # --------------------------------------------------------------------------
+
+def capitalized(s: str) -> str:
+    """Erstes Zeichen in Titelschreibung, Rest klein: `lstm` -> `Lstm`."""
+    return s[:1].title() + s[1:].lower()
+
+
+def has_humps(s: str) -> bool:
+    """True für Binnenmajuskeln (CamelCase), d. h. weder klein, GROSS noch `Xxx`."""
+    return s not in (s.lower(), s.upper(), capitalized(s))
+
+
+def lower_first(s: str) -> str:
+    """Anfang klein, Binnenmajuskeln bleiben: `HomeAssistent` -> `homeAssistent`.
+
+    Ein führendes Akronym wird bis vor den Anfang des nächsten Worts klein
+    geschrieben (`LSTMCell` -> `lstmCell`, `IOError` -> `ioError`).
+    """
+    run = 0
+    while run < len(s) and s[run].isupper():
+        run += 1
+    if 1 < run < len(s) and s[run].islower():
+        run -= 1
+    run = max(run, 1)
+    return s[:run].lower() + s[run:]
+
+
+def upper_first(s: str) -> str:
+    """Erstes Zeichen in Titelschreibung, Binnenmajuskeln bleiben."""
+    return s[:1].title() + s[1:]
+
+
+def lower_camel(s: str) -> str:
+    return lower_first(s) if has_humps(s) else s.lower()
+
+
+def upper_camel(s: str) -> str:
+    return upper_first(s) if has_humps(s) else capitalized(s)
+
 
 def as_typed(s: str) -> str:
     return s
 
 
-def upper_first(s: str) -> str:
-    return s[:1].upper() + s[1:]
+# Schreibweisen in absteigendem Vorrang (Abschnitt 3.1). Jede Funktion f wird
+# auf ALT und NEU angewandt; ersetzt wird f(ALT) durch f(NEU). Die CamelCase-
+# Formen stehen vorn, damit Binnenmajuskeln von NEU erhalten bleiben, wenn
+# ALT keine hat (lstm -> convLstm). `as_typed` sichert nur ab, dass die
+# eingegebene Form von ALT immer gesucht wird.
+CASE_STYLES = (lower_camel, upper_camel, str.upper, str.lower, capitalized, as_typed)
 
 
-def lower_first(s: str) -> str:
-    return s[:1].lower() + s[1:]
-
-
-def capitalized(s: str) -> str:
-    return s[:1].upper() + s[1:].lower()
-
-
-# Unterstützte Schreibweisen in absteigendem Vorrang (Abschnitt 3.2). Jede
-# Funktion leitet aus der eingegebenen Form eine Schreibweise ab; dieselbe
-# Funktion, angewandt auf NEU, liefert den Ersatz im selben Stil.
-CASE_STYLES = (as_typed, str.lower, str.upper, upper_first, lower_first, capitalized)
+def gaps(regex: re.Pattern, s):
+    """Die Abschnitte von `s` zwischen den Treffern von `regex`."""
+    pos = 0
+    for m in regex.finditer(s):
+        yield s[pos:m.start()]
+        pos = m.end()
+    yield s[pos:]
 
 
 class Replacer:
     """σ: ersetzt alle Schreibweisen von ALT in einem Durchlauf (Abschnitt 3).
 
-    `pairs` bildet jede erkannte Schreibweise von ALT auf NEU im selben Stil
-    ab. Fallen zwei Schreibweisen zusammen (bei `lstm` sind „wie eingegeben“
-    und „klein“ dieselbe Form), gilt die vorrangige.
+    `pairs` bildet jede gesuchte Form f(ALT) auf f(NEU) ab. Fallen zwei
+    Schreibweisen von ALT zusammen (bei `lstm` sind lower_camel und lower
+    dieselbe Form), gilt die vorrangige.
     """
 
     def __init__(self, old: str, new: str, ignore_case: bool = True):
+        # Unterscheiden sich ALT und NEU nur in der Schreibweise, wäre die
+        # stiltreue Abbildung (fast) die Identität: dann exakt ersetzen.
+        self.exact = not ignore_case or old.lower() == new.lower()
         self.pairs: dict[str, str] = {}
-        for style in CASE_STYLES if ignore_case else CASE_STYLES[:1]:
+        for style in (as_typed,) if self.exact else CASE_STYLES:
             self.pairs.setdefault(style(old), style(new))
         self.ascii = all(a.isascii() and n.isascii() for a, n in self.pairs.items())
 
@@ -88,11 +132,17 @@ class Replacer:
         self._bytes_pairs = {a.encode("utf-8"): n.encode("utf-8") for a, n in self.pairs.items()}
         self._bytes_re = re.compile(b"|".join(re.escape(a.encode("utf-8")) for a in forms))
 
+        changing = [a for a in forms if self.pairs[a] != a]
+        self._wide_res = [re.compile(b"|".join(re.escape(a.encode(enc)) for a in changing))
+                          for enc in WIDE_ENCODINGS] if changing else []
+
         # Nur zum Melden von Vorkommen in nicht unterstützter Schreibweise
-        # (z. B. `lStM`); ersetzt wird ausschließlich über `pairs`.
-        self._loose_text = re.compile(re.escape(old), re.IGNORECASE) if ignore_case else None
+        # (z. B. `lStM`); ersetzt wird ausschließlich über `pairs`. Bei ASCII-ALT
+        # nur ASCII-Faltung, sonst passte `k` auch auf das Kelvin-Zeichen.
+        flags = re.IGNORECASE | (re.ASCII if old.isascii() else 0)
+        self._loose_text = None if self.exact else re.compile(re.escape(old), flags)
         self._loose_bytes = (re.compile(re.escape(old.encode("ascii")), re.IGNORECASE)
-                             if ignore_case and old.isascii() else None)
+                             if not self.exact and old.isascii() else None)
 
     def changes(self) -> dict[str, str]:
         """Die Paare, die tatsächlich etwas ändern."""
@@ -112,22 +162,30 @@ class Replacer:
         return sum(1 for m in self._bytes_re.finditer(data)
                    if self._bytes_pairs[m.group()] != m.group())
 
+    def count_wide(self, data: bytes) -> int:
+        """Vorkommen in UTF-16/-32 (nur zum Melden). Maximum, nicht Summe:
+        das BE-Muster passt sonst auch versetzt in LE-Text."""
+        return max((len(r.findall(data)) for r in self._wide_res), default=0)
+
     def unsupported(self, text: str) -> list[str]:
-        """Vorkommen von ALT in einer Schreibweise, die σ nicht ersetzt."""
+        """Vorkommen von ALT in einer Schreibweise, die σ nicht ersetzt.
+
+        Gesucht wird nur zwischen den Treffern von σ: Was einen ersetzten
+        Treffer überlappt, existiert danach nicht mehr unverändert.
+        """
         if self._loose_text is None:
             return []
-        return [m.group() for m in self._loose_text.finditer(text) if m.group() not in self.pairs]
+        return [m.group() for seg in gaps(self._text_re, text)
+                for m in self._loose_text.finditer(seg) if m.group() not in self.pairs]
 
     def unsupported_bytes(self, data: bytes) -> list[str]:
         if self._loose_text is None:
             return []
         if self._loose_bytes is not None:
-            found = (m.group().decode("ascii") for m in self._loose_bytes.finditer(data))
+            found = (m.group().decode("ascii") for seg in gaps(self._bytes_re, data)
+                     for m in self._loose_bytes.finditer(seg))
             return [s for s in found if s not in self.pairs]
-        try:
-            return self.unsupported(data.decode("utf-8"))
-        except UnicodeDecodeError:
-            return []
+        return self.unsupported(data.decode("utf-8", errors="surrogateescape"))
 
 
 def describe_unsupported(found: list[str]) -> str:
@@ -186,6 +244,15 @@ def is_utf8(data: bytes) -> bool:
     return True
 
 
+def is_utf8_name(name: str) -> bool:
+    """False für Dateinamen mit Bytes, die kein UTF-8 sind (surrogateescape)."""
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def plan_content(path: str, replacer: Replacer, plan: Plan) -> None:
     """Prüft, ob und wie der Inhalt einer regulären Datei ersetzt werden darf.
 
@@ -203,14 +270,16 @@ def plan_content(path: str, replacer: Replacer, plan: Plan) -> None:
 
     count = replacer.count_bytes(data)
     unsupported = replacer.unsupported_bytes(data)
+    if b"\0" in data:
+        found = count + len(unsupported) + replacer.count_wide(data)
+        if found:
+            plan.warnings.append((path, f"Binärdatei, {found} Vorkommen nicht ersetzt"))
+        return
     if not count and not unsupported:
         return
-    if b"\0" in data:
-        plan.warnings.append(
-            (path, f"Binärdatei, {count + len(unsupported)} Vorkommen nicht ersetzt"))
-        return
     if not replacer.ascii and not is_utf8(data):
-        plan.warnings.append((path, f"kein gültiges UTF-8, {count} Vorkommen nicht ersetzt"))
+        plan.warnings.append(
+            (path, f"kein gültiges UTF-8, {count + len(unsupported)} Vorkommen nicht ersetzt"))
         return
     if count:
         plan.contents.append((path, count))
@@ -230,14 +299,15 @@ def in_renamed_area(directory: str, root_abs: str, excludes: frozenset[str]) -> 
 
 
 def map_link_target(link: str, target: str, root_abs: str, replacer: Replacer,
-                    excludes: frozenset[str]) -> str:
+                    excludes: frozenset[str], kept: set[str]) -> str:
     """Überträgt die Umbenennungen komponentenweise auf ein Symlink-Ziel (Abschnitt 4.5).
 
     Das Ziel wird lexikalisch vom Ordner des Links aus durchlaufen. Eine
     Komponente wird genau dann ersetzt, wenn sie einen Eintrag bezeichnet, den
-    Phase 6 umbenennt – also innerhalb von `root`, aber nicht `root` selbst und
-    nicht in einem ausgeschlossenen Bereich. So bleibt der Link nach der
-    Umbenennung gültig, während Pfade außerhalb von `root` unverändert bleiben.
+    Phase 6 umbenennt – also innerhalb von `root`, aber nicht `root` selbst,
+    nicht in einem ausgeschlossenen Bereich und nicht in `kept` (Einträge,
+    deren Umbenennung abgelehnt wurde). So bleibt der Link nach der
+    Umbenennung gültig und zeigt nie auf einen fremden Eintrag.
     """
     cur = os.sep if os.path.isabs(target) else os.path.dirname(os.path.abspath(link))
     parts = []
@@ -248,9 +318,11 @@ def map_link_target(link: str, target: str, root_abs: str, replacer: Replacer,
             parts.append(comp)
             cur = os.path.dirname(cur)
         else:
-            renamed = comp not in excludes and in_renamed_area(cur, root_abs, excludes)
+            entry = os.path.join(cur, comp)
+            renamed = (comp not in excludes and entry not in kept
+                       and in_renamed_area(cur, root_abs, excludes))
             parts.append(replacer.sub(comp) if renamed else comp)
-            cur = os.path.join(cur, comp)
+            cur = entry
     return os.sep.join(parts)
 
 
@@ -281,6 +353,8 @@ def build_plan(root: str, replacer: Replacer, excludes: frozenset[str]) -> Plan:
     root_abs = os.path.abspath(root)
     me = self_identity()
     targets: set[str] = set()
+    kept: set[str] = set()       # absolute Pfade, deren Umbenennung abgelehnt wurde
+    links: list[tuple[str, str]] = []
 
     for path in iter_entries(root, excludes, plan.errors):
         try:
@@ -298,12 +372,7 @@ def build_plan(root: str, replacer: Replacer, excludes: frozenset[str]) -> Plan:
         elif stat.S_ISLNK(st.st_mode):
             target = os.readlink(path)
             if replacer.count(target):
-                new_target = map_link_target(path, target, root_abs, replacer, excludes)
-                if new_target != target:
-                    plan.links.append((path, target, new_target))
-                else:
-                    plan.warnings.append(
-                        (path, "Symlink-Ziel: Vorkommen liegen außerhalb des Baums, nicht ersetzt"))
+                links.append((path, target))
 
         name = os.path.basename(path)
         unsupported = replacer.unsupported(name)
@@ -313,14 +382,30 @@ def build_plan(root: str, replacer: Replacer, excludes: frozenset[str]) -> Plan:
         if new_name == name:
             continue
         dst = os.path.join(os.path.dirname(path), new_name)
-        if new_name in (".", ".."):
+        if not replacer.ascii and not is_utf8_name(name):
+            # Wie bei Dateiinhalten (Abschnitt 4.3): keine gemischte Kodierung.
+            plan.warnings.append((path, "Name: kein gültiges UTF-8, nicht umbenannt"))
+            kept.add(os.path.abspath(path))
+        elif new_name in (".", ".."):
             plan.errors.append((path, f"ungültiger neuer Name '{new_name}'"))
+            kept.add(os.path.abspath(path))
         elif dst in targets or (os.path.lexists(dst) and not same_entry(path, dst)):
             # Nie überschreiben (Abschnitt 4.4).
             plan.errors.append((path, f"'{new_name}' existiert bereits, nicht umbenannt"))
+            kept.add(os.path.abspath(path))
         else:
             targets.add(dst)
             plan.renames.append((path, dst))
+
+    # Linkziele erst jetzt, da alle abgelehnten Umbenennungen bekannt sind.
+    for path, target in links:
+        new_target = map_link_target(path, target, root_abs, replacer, excludes, kept)
+        if new_target != target:
+            plan.links.append((path, target, new_target))
+        else:
+            plan.warnings.append(
+                (path, "Symlink-Ziel: Vorkommen liegen außerhalb des Baums "
+                       "oder werden nicht umbenannt, nicht ersetzt"))
 
     # Tiefste Einträge zuerst (Abschnitt 4.4): Beim Umbenennen eines Eintrags
     # tragen alle seine Vorfahren noch ihre alten Namen, der Pfad ist gültig.
@@ -513,10 +598,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     replacer = Replacer(old, new, ignore_case=not args.case_sensitive)
+    mode = ""
+    if args.case_sensitive:
+        mode = "  (nur exakte Schreibweise)"
+    elif replacer.exact:
+        mode = "  (ALT und NEU unterscheiden sich nur in der Schreibweise: exakte Ersetzung)"
     excludes = DEFAULT_EXCLUDES | frozenset(args.exclude)
     print(f"Verzeichnis : {os.path.abspath(root)}")
-    print("Ersetzung   : " + ", ".join(f"'{a}' -> '{n}'" for a, n in replacer.changes().items())
-          + ("  (nur exakte Schreibweise)" if args.case_sensitive else ""))
+    print("Ersetzung   : "
+          + ", ".join(f"'{a}' -> '{n}'" for a, n in replacer.changes().items()) + mode)
     print(f"Ausgenommen : {', '.join(sorted(excludes))}")
 
     plan = build_plan(root, replacer, excludes)
@@ -524,7 +614,11 @@ def main(argv: list[str] | None = None) -> int:
     planning_failed = 1 if plan.errors else 0
 
     if plan.is_empty():
-        print("\nKeine Vorkommen gefunden, nichts zu tun.")
+        if plan.warnings:
+            print(f"\nKeine ersetzbaren Vorkommen; {len(plan.warnings)} Stelle(n) "
+                  "übersprungen (siehe oben).")
+        else:
+            print("\nKeine Vorkommen gefunden, nichts zu tun.")
         return planning_failed
     if args.dry_run:
         print("\nProbelauf: es wurde nichts verändert.")

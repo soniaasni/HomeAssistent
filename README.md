@@ -21,7 +21,9 @@ beim Suchen ignoriert, ersetzt wird **im selben Stil**:
 | `Lstm`   | `Abcd` |
 | `LSTM`   | `ABCD` |
 
-Bei zusammengesetzten Namen den alten Namen in CamelCase eingeben
+Wie du ALT und NEU eintippst (`lstm`, `Lstm` oder `LSTM`), ist egal.
+Ziffern und Sonderzeichen bleiben immer unverändert. Bei zusammengesetzten
+Namen den alten Namen mit Binnenmajuskeln eingeben
 (`HomeAssistent SmartHome`); dann werden auch `homeAssistent` →
 `smartHome`, `homeassistent` → `smarthome` usw. erkannt. Ausgenommen sind
 `.git` und andere Versionsverwaltungs-, Cache- und Abhängigkeitsordner
