@@ -262,8 +262,8 @@ bestimmt:
 Ändert σ den *Namen* des Eintrags, wird die Umbenennung geplant
 (Abschnitt 4.4). Alle Pfade im Plan beziehen sich auf den **Ausgangszustand**
 des Baums. Der vollständige Plan wird angezeigt, eingeleitet von der
-Zuordnung τ aller Formen (z. B. `'lstm' -> 'abcd', 'LSTM' -> 'ABCD',
-'Lstm' -> 'Abcd'`); ausgeführt wird nur nach Bestätigung (`j`/`ja`), mit
+Zuordnung τ aller Formen (z. B. `'lstm' -> 'abcd', 'Lstm' -> 'Abcd',
+'LSTM' -> 'ABCD'`); ausgeführt wird nur nach Bestätigung (`j`/`ja`), mit
 Option `-y` ohne Rückfrage, mit Option `-n` nie (Probelauf, R5).
 
 ### 4.3 Ersetzung in Dateiinhalten
@@ -633,7 +633,7 @@ $ ./changeName .
 Alter Name (wird gesucht): lstm
 Neuer Name (ersetzt ihn):   abcd
 Verzeichnis : /home/user/projekt
-Ersetzung   : 'lstm' -> 'abcd', 'LSTM' -> 'ABCD', 'Lstm' -> 'Abcd'
+Ersetzung   : 'lstm' -> 'abcd', 'Lstm' -> 'Abcd', 'LSTM' -> 'ABCD'
 Ausgenommen : .bzr, .git, .hg, .mypy_cache, …
 
 Dateiinhalte (2 Dateien, 4 Vorkommen):
